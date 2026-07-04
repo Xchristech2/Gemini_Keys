@@ -19,7 +19,7 @@ let knowledgeBase = '';
 async function loadKnowledgeBase() {
     try {
         const response = await fetch(
-            'https://raw.githubusercontent.com/wallyjaytechh/WALLYJAYTECH-MD/main/README.md'
+            'https://raw.githubusercontent.com/Xchristech2/GAAJU-XMD/main/README.md'
         );
         let text = await response.text();
         text = text.replace(/<[^>]*>/g, '');
@@ -39,7 +39,7 @@ loadKnowledgeBase();
 setInterval(loadKnowledgeBase, 60 * 60 * 1000);
 
 app.get('/', (req, res) => {
-    res.send("WALLYJAYTECH-MD Proxy is running!");
+    res.send("GAAJU-XMD Proxy is running!");
 });
 
 app.post('/v1/gemini', async (req, res) => {
