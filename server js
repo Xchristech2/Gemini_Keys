@@ -6,122 +6,196 @@ app.use(express.json());
 const GEMINI_KEYS = (process.env.GEMINI_KEYS || '').split(',').filter(Boolean);
 let keyIndex = 0;
 
+const ALLOWED_NUMBERS = (process.env.ADMIN_NUMBERS || '2348069675806').split(',');
+const ALLOWED_REPO = process.env.ALLOWED_REPO || 'Xchristech/GAAJU-XMD';
+
+// GitHub Repo Storage
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || '';
+const GITHUB_REPO = process.env.GITHUB_REPO || 'xchristech/gaaju-data';
+const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/contents/bot_data.json`;
+
+let totalUsers = new Set();
+let botInstances = {};
+let savePending = false;
+
+async function loadData() {
+    try {
+        const res = await fetch(GITHUB_API, {
+            headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Accept': 'application/vnd.github.v3+json' }
+        });
+        if (!res.ok) { console.log('GitHub load failed'); return; }
+        const data = await res.json();
+        const content = Buffer.from(data.content || 'e30=', 'base64').toString('utf8');
+        const parsed = JSON.parse(content);
+        totalUsers = new Set(parsed.totalUsers || []);
+        botInstances = parsed.botInstances || {};
+        for (const key of Object.keys(botInstances)) botInstances[key].online = false;
+        console.log(`Loaded ${totalUsers.size} users from GitHub`);
+    } catch (e) { console.log('Failed to load from GitHub'); }
+}
+
+async function syncToGitHub() {
+    if (!savePending) return;
+    try {
+        const content = Buffer.from(JSON.stringify({ totalUsers: [...totalUsers], botInstances })).toString('base64');
+        const res = await fetch(GITHUB_API, { headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}` } });
+        if (!res.ok) return;
+        const data = await res.json();
+        await fetch(GITHUB_API, {
+            method: 'PUT',
+            headers: { 'Authorization': `Bearer ${GITHUB_TOKEN}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ message: 'Update bot data', content: content, sha: data.sha })
+        });
+        savePending = false;
+        console.log('Synced to GitHub');
+    } catch (e) {}
+}
+
+function markSave() { savePending = true; }
+
+loadData();
 console.log(`Loaded ${GEMINI_KEYS.length} Gemini API keys`);
 
-function getNextKey() {
-    const key = GEMINI_KEYS[keyIndex];
-    keyIndex = (keyIndex + 1) % GEMINI_KEYS.length;
-    return key;
-}
+function getNextKey() { const key = GEMINI_KEYS[keyIndex]; keyIndex = (keyIndex + 1) % GEMINI_KEYS.length; return key; }
 
 let knowledgeBase = '';
-
 async function loadKnowledgeBase() {
     try {
-        const response = await fetch(
-            'https://raw.githubusercontent.com/Xchristech2/GAAJU-XMD/main/README.md'
-        );
+        const response = await fetch('https://raw.githubusercontent.com/Xchristech2/GAAJU-XMD/main/README.md');
         let text = await response.text();
-        text = text.replace(/<[^>]*>/g, '');
-        text = text.replace(/!\[.*?\]\(.*?\)/g, '');
-        text = text.replace(/\[!\[.*?\]\(.*?\)\]\(.*?\)/g, '');
-        text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
-        text = text.replace(/`([^`]+)`/g, '$1');
-        text = text.replace(/\*\*([^*]+)\*\*/g, '$1');
+        text = text.replace(/<[^>]*>/g, '').replace(/!\[.*?\]\(.*?\)/g, '').replace(/\[!\[.*?\]\(.*?\)\]\(.*?\)/g, '').replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/\*\*([^*]+)\*\*/g, '$1');
         knowledgeBase = text.substring(0, 2000);
-        console.log('Knowledge base loaded');
-    } catch (e) {
-        console.log('Failed to load knowledge base');
-    }
+    } catch (e) {}
 }
-
 loadKnowledgeBase();
 setInterval(loadKnowledgeBase, 60 * 60 * 1000);
 
 app.get('/', (req, res) => {
-    res.send("GAAJU-XMD Proxy is running!");
+    let activeBots = 0;
+    for (const d of Object.values(botInstances)) if (d.online) activeBots++;
+    res.send(`<!DOCTYPE html><html><head><title>GAAJU-XMD | Proxy</title><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',sans-serif;background:linear-gradient(135deg,#0a0a0a,#1a1a2e);color:#fff;min-height:100vh;display:flex;justify-content:center;align-items:center}.container{text-align:center;padding:40px;background:rgba(255,255,255,.05);border-radius:20px;border:1px solid rgba(0,255,255,.2);box-shadow:0 0 40px rgba(0,255,255,.1);max-width:650px;width:90%}.logo{font-size:28px;font-weight:700;color:#0ff;margin-bottom:5px;letter-spacing:2px}.subtitle{font-size:14px;color:#888;margin-bottom:15px}.status{display:inline-block;padding:8px 20px;border-radius:25px;font-size:14px;margin:10px 0}.online{background:rgba(0,255,100,.15);color:#00ff64;border:1px solid rgba(0,255,100,.3)}.stats{display:flex;justify-content:center;gap:20px;margin:20px 0;flex-wrap:wrap}.stat-box{background:rgba(255,255,255,.05);padding:18px 15px;border-radius:15px;border:1px solid rgba(0,255,255,.15);min-width:100px}.stat-number{font-size:32px;font-weight:700;color:#0ff}.stat-label{font-size:11px;color:#888;margin-top:5px;text-transform:uppercase;letter-spacing:1px}.info{color:#aaa;font-size:13px;margin-top:20px;line-height:1.8;text-align:left;background:rgba(255,255,255,.03);padding:15px;border-radius:10px}.info span{color:#0ff;font-weight:700}.pulse{animation:pulse 2s infinite}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}.footer{margin-top:20px;font-size:11px;color:#555}.footer a{color:#0ff;text-decoration:none}</style></head><body><div class="container"><div class="logo">⚡ GAAJU-XMD</div><div class="subtitle">Gemini + GPT Proxy Server</div><div class="status online pulse">🟢 Server Active</div><div class="stats"><div class="stat-box"><div class="stat-number">${totalUsers.size}</div><div class="stat-label">Total Users</div></div><div class="stat-box"><div class="stat-number">${activeBots}</div><div class="stat-label">Active Now</div></div><div class="stat-box"><div class="stat-number">${GEMINI_KEYS.length}</div><div class="stat-label">Gemini Keys</div></div></div><div class="info">🧠 <span>Gemini:</span> /v1/gemini<br>🤖 <span>GPT-5.4:</span> /v1/gpt<br>🔑 <span>API Keys:</span> ${GEMINI_KEYS.length}<br>📡 <span>Heartbeat:</span> /v1/heartbeat<br>📊 <span>Stats:</span> /v1/stats<br>👨‍💻 <span>Created by:</span> Chris Gaaju<br>📺 <span>YouTube:</span> @Xchristech<br>⭐ <span>GitHub:</span> Xchristech2</div><div class="footer">© 2025-2026 <a href="https://github.com/Xchristech2">GAAJU-XMD</a></div></div></body></html>`);
+});
+
+app.post('/v1/heartbeat', (req, res) => {
+    const { botId, userId, platform, botOwner, timezone, botName } = req.body;
+    if (!botId) return res.status(400).json({ error: "Missing botId" });
+    totalUsers.add(userId || botId);
+    botInstances[botId] = { userId: userId || botId, platform: platform || 'unknown', botOwner: botOwner || 'Unknown', timezone: timezone || 'Africa/Lagos', botName: botName || 'GAAJU-XMD', lastSeen: Date.now(), online: true, firstSeen: botInstances[botId]?.firstSeen || Date.now(), commandCount: botInstances[botId]?.commandCount || 0, commands: botInstances[botId]?.commands || {} };
+    markSave();
+    res.json({ success: true });
+});
+
+app.post('/v1/offline', (req, res) => {
+    const { botId } = req.body;
+    if (botInstances[botId]) { botInstances[botId].online = false; markSave(); }
+    res.json({ success: true });
+});
+
+app.post('/v1/track-command', (req, res) => {
+    const { botId, command } = req.body;
+    if (botInstances[botId]) {
+        if (!botInstances[botId].commands) botInstances[botId].commands = {};
+        botInstances[botId].commands[command] = (botInstances[botId].commands[command] || 0) + 1;
+        botInstances[botId].commandCount = (botInstances[botId].commandCount || 0) + 1;
+        markSave();
+    }
+    res.json({ success: true });
+});
+
+app.get('/v1/stats', (req, res) => {
+    let activeBots = 0;
+    for (const d of Object.values(botInstances)) if (d.online) activeBots++;
+    res.json({ activeUsers: activeBots, totalUsers: totalUsers.size });
+});
+
+app.get('/v1/admin/users', (req, res) => {
+    const userNumber = req.headers['x-user-number'] || '';
+    if (!ALLOWED_NUMBERS.includes(userNumber)) return res.status(401).json({ error: "Unauthorized" });
+    const users = [];
+    for (const [botId, data] of Object.entries(botInstances)) users.push({ userId: data.userId, platform: data.platform, lastSeen: new Date(data.lastSeen).toISOString(), isOnline: data.online || false });
+    res.json({ totalUsers: totalUsers.size, activeUsers: users.filter(u => u.isOnline).length, users: users.sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen)) });
+});
+
+app.get('/v1/userinfo/:number', (req, res) => {
+    const number = req.params.number;
+    const userData = Object.values(botInstances).find(u => u.userId === number);
+    if (!userData) return res.json({ error: "User not found" });
+    const now = Date.now(), ageMs = now - (userData.firstSeen || now);
+    const seconds = Math.floor(ageMs / 1000), minutes = Math.floor(seconds / 60), hours = Math.floor(minutes / 60), days = Math.floor(hours / 24), weeks = Math.floor(days / 7), months = Math.floor(days / 30), years = Math.floor(days / 365);
+    let ageDisplay;
+    if (seconds < 60) ageDisplay = `${seconds}s`; else if (minutes < 60) ageDisplay = `${minutes}m ${seconds % 60}s`; else if (hours < 24) ageDisplay = `${hours}h ${minutes % 60}m`; else if (days < 7) ageDisplay = `${days}d ${hours % 24}h`; else if (weeks < 4) ageDisplay = `${weeks}w ${days % 7}d`; else if (months < 12) ageDisplay = `${months}mo ${weeks % 4}w`; else ageDisplay = `${years}y ${months % 12}mo`;
+    let favCmd = 'None', favCount = 0;
+    if (userData.commands) for (const [cmd, count] of Object.entries(userData.commands)) if (count > favCount) { favCount = count; favCmd = cmd; }
+    res.json({ userId: userData.userId, platform: userData.platform, botOwner: userData.botOwner || 'Unknown', timezone: userData.timezone || 'Unknown', botName: userData.botName || 'GAAJU-XMD', isOnline: userData.online || false, firstSeen: new Date(userData.firstSeen).toISOString(), ageDisplay, commandCount: userData.commandCount || 0, favCmd: favCount > 0 ? `${favCmd} (${favCount} uses)` : 'None', uptimeDisplay: userData.online ? `${Math.floor((now - userData.lastSeen) / 3600000)}h ${Math.floor(((now - userData.lastSeen) % 3600000) / 60000)}m` : 'N/A' });
 });
 
 app.post('/v1/gemini', async (req, res) => {
     try {
+        const repo = req.headers['x-bot-repo'] || '';
+        if (repo !== ALLOWED_REPO) return res.status(401).json({ error: "Unauthorized. Use official GAAJU-XMD." });
         const { prompt } = req.body;
         if (!prompt) return res.status(400).json({ error: "Prompt required" });
+        const systemPrompt = `You are a professional AI assistant. STRICT RULES:
+1. Use ONLY single * for bold headings. NEVER use **.
+2. Bold headings must be the ONLY text on their line.
+3. Never mix bold and plain text on the same line.
+4. If a heading exceeds 25 chars, split into multiple *bold* lines.
+5. ALWAYS bold words followed by : at line start (e.g., *Name:* value).
+6. Never use _italic_, ~strikethrough~, ---, or any markdown.
+7. Use • for bullet points.
+8. Separate sections with blank lines only.
+9. Keep each line under 30 characters.
+10. Use emojis naturally.
+11. Never dump raw markdown or tables.
+12. Never introduce yourself unless asked.
+13. Always write URLs in full.
 
-        const origin = req.headers['x-bot-origin'] || '';
-        if (!origin.includes('wallyjaytechh') || !origin.includes('WALLYJAYTECH-MD')) {
-            return res.status(401).json({ error: "Unauthorized. Use official WALLYJAYTECH-MD." });
-        }
-
-        const systemPrompt = `You are a helpful AI assistant named WALLYJAYTECH-MD.
-
-When asked about yourself, use this information:
-${knowledgeBase}
-
-For general questions, answer normally as a helpful AI.
-
-STRICT FORMATTING RULES:
-- ONLY format text that is 25 characters or LESS. If a word/phrase is over 25 characters, do NOT format it at all.
-- *bold*: The ENTIRE line must be just *the bold text* (under 25 chars). Never mix bold with plain text on the same line.
-- _italic_: The ENTIRE line must be just _the italic text_ (under 25 chars). Never mix italic with plain text on the same line.
-- ~strikethrough~: Same rules as bold/italic.
-- Triple backticks for code: Same rules.
-- • for bullet points.
-- --- on its own line for section dividers.
-- Use emojis naturally in your responses frequently, friendly and interactively.
-- NEVER create border designs (no ╭╰├◇◆★☆♪).
-- NEVER let any formatting span across two lines.
-- NEVER put formatted and unformatted text on the same line.
-- EXCEPTION: When a line starts with a keyword followed by : (like *Keyword:* rest of text), only bold the keyword before the colon. The rest stays plain.
-
-User: ${prompt}`;
-
-        let reply = '';
-        let success = false;
-
+Info: ${knowledgeBase}. User: ${prompt}`;
+        let reply = '', success = false;
         for (let i = 0; i < GEMINI_KEYS.length; i++) {
             try {
                 const key = getNextKey();
-                
-                const response = await fetch(
-                    `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent`,
-                    {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'X-goog-api-key': key
-                        },
-                        body: JSON.stringify({
-                            contents: [{ parts: [{ text: systemPrompt }] }]
-                        })
-                    }
-                );
-                const data = await response.json();
-                
-                reply = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (reply) {
-                    success = true;
-                    break;
-                }
+                const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-goog-api-key': key }, body: JSON.stringify({ contents: [{ parts: [{ text: systemPrompt }] }] }) });
+                const d = await r.json();
+                reply = d.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (reply) { success = true; break; }
             } catch (e) {}
         }
-
-        if (!success) {
-            return res.status(429).json({ error: "All API keys exhausted. Try again later." });
-        }
-
+        if (!success) return res.status(429).json({ error: "All API keys exhausted." });
         res.json({ reply });
-    } catch (error) {
-        console.error('Gemini error:', error);
-        res.status(500).json({ error: "Failed to connect to Gemini" });
-    }
+    } catch (e) { res.status(500).json({ error: "Failed" }); }
 });
 
+app.post('/v1/gpt', async (req, res) => {
+    try {
+        const repo = req.headers['x-bot-repo'] || '';
+        if (repo !== ALLOWED_REPO) return res.status(401).json({ error: "Unauthorized. Use official GAAJU-XMD." });
+        const { prompt } = req.body;
+        if (!prompt) return res.status(400).json({ error: "Prompt required" });
+        const systemPrompt = `Give a detailed, comprehensive answer. Use *bold* for headings on their own line, • for bullets, and blank lines between sections. Never use ** or _italic_. Keep lines short. Info about GAAJU-XMD: ${knowledgeBase}. User: ${prompt}`;
+
+        let reply = '';
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                const response = await fetch('https://text.pollinations.ai/openai', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model: 'openai', messages: [{ role: 'user', content: systemPrompt }] })
+                });
+                const data = await response.json();
+                reply = data.choices?.[0]?.message?.content;
+                if (reply && reply.length > 20) break;
+                await new Promise(r => setTimeout(r, 2000));
+            } catch (e) {}
+        }
+        res.json({ reply: reply || 'GPT is busy. Try again.' });
+    } catch (e) { res.status(500).json({ error: "Failed" }); }
+});
 const PORT = process.env.PORT || 3000;
 const MY_URL = 'https://gemini-proxy-10a1.onrender.com';
-
 app.listen(PORT, () => {
     console.log(`Proxy running on port ${PORT}`);
-    setInterval(async () => {
-        try { await fetch(MY_URL); } catch (e) {}
-    }, 12 * 60 * 1000);
+    setInterval(async () => { try { await fetch(MY_URL); } catch (e) {} }, 12 * 60 * 1000);
+    setInterval(() => { const now = Date.now(), threeSecAgo = now - 3000; let changed = false; for (const [botId, data] of Object.entries(botInstances)) { if (data.online && data.lastSeen < threeSecAgo) { botInstances[botId].online = false; changed = true; } } if (changed) markSave(); }, 1000);
+    setInterval(async () => { await loadData(); }, 60 * 1000);
+    setInterval(async () => { await syncToGitHub(); }, 5 * 60 * 1000);
 });
